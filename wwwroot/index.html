@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plaid Demo - Connect Your Bank</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-bottom: 20px;
+        }
+
+        .button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border-left: 4px solid #1976d2;
+        }
+
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+            border-left: 4px solid #388e3c;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border-left: 4px solid #c62828;
+        }
+
+        .status.loading {
+            background: #fff3e0;
+            color: #f57c00;
+            border-left: 4px solid #f57c00;
+        }
+
+        .transactions {
+            margin-top: 30px;
+        }
+
+        .transactions h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+
+        .transaction-item {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .transaction-name {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .transaction-amount {
+            font-weight: 600;
+            color: #667eea;
+        }
+
+        .transaction-date {
+            font-size: 12px;
+            color: #999;
+            margin-top: 4px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏦 Plaid Demo</h1>
+        <p class="subtitle">Connect your bank account to view transactions</p>
+
+        <div id="statusContainer"></div>
+
+        <button id="connectButton" class="button" onclick="initializePlaidLink()">
+            Connect Bank Account
+        </button>
+
+        <button id="testReauthButton" class="button" onclick="testReauthentication()" style="background: #f57c00; margin-top: 10px;" disabled>
+            Test Re-authentication (Update Mode)
+        </button>
+
+        <div id="transactionsContainer" class="transactions hidden">
+            <h2>Recent Transactions</h2>
+            <div id="transactionsList"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <script>
+        let linkHandler = null;
+        let accessToken = null;
+
+        async function initializePlaidLink() {
+            const button = document.getElementById('connectButton');
+            const statusContainer = document.getElementById('statusContainer');
+            
+            try {
+                button.disabled = true;
+                showStatus('loading', 'Requesting link token...');
+
+                // Step 1: Get link_token from backend
+                const linkTokenResponse = await fetch('/api/link-token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!linkTokenResponse.ok) {
+                    throw new Error('Failed to get link token');
+                }
+
+                const linkTokenData = await linkTokenResponse.json();
+                const linkToken = linkTokenData.link_token;
+
+                showStatus('info', 'Opening Plaid Link...');
+
+                // Step 2: Initialize Plaid Link
+                if (linkHandler) {
+                    linkHandler.destroy();
+                }
+
+                linkHandler = Plaid.create({
+                    token: linkToken,
+                    onSuccess: async (publicToken, metadata) => {
+                        showStatus('success', `Successfully connected to ${metadata.institution.name}!`);
+                        button.disabled = false;
+                        button.textContent = 'Reconnect Bank Account';
+
+                        // Step 3: Exchange public_token for access_token
+                        try {
+                            showStatus('loading', 'Exchanging token...');
+                            const exchangeResponse = await fetch('/api/exchange-token', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ public_token: publicToken })
+                            });
+
+                            if (!exchangeResponse.ok) {
+                                throw new Error('Failed to exchange token');
+                            }
+
+                            const exchangeData = await exchangeResponse.json();
+                            accessToken = exchangeData.access_token;
+
+                            // Enable test re-auth button
+                            document.getElementById('testReauthButton').disabled = false;
+
+                            // Step 4: Fetch transactions
+                            await fetchTransactions();
+                        } catch (error) {
+                            showStatus('error', `Error: ${error.message}`);
+                        }
+                    },
+                    onExit: (err, metadata) => {
+                        button.disabled = false;
+                        if (err != null) {
+                            showStatus('error', `Error: ${err.error_message || 'User exited'}`);
+                        } else {
+                            showStatus('info', 'Connection cancelled');
+                        }
+                    },
+                    onEvent: (eventName, metadata) => {
+                        console.log('Plaid event:', eventName, metadata);
+                    }
+                });
+
+                // Open Plaid Link
+                linkHandler.open();
+            } catch (error) {
+                button.disabled = false;
+                showStatus('error', `Error: ${error.message}`);
+            }
+        }
+
+        async function fetchTransactions() {
+            if (!accessToken) {
+                showStatus('error', 'No access token available');
+                return;
+            }
+
+            try {
+                showStatus('loading', 'Fetching transactions...');
+
+                const response = await fetch('/api/transactions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ access_token: accessToken })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    
+                    // Check if it's ITEM_LOGIN_REQUIRED error
+                    if (errorData.error === 'ITEM_LOGIN_REQUIRED') {
+                        showStatus('info', 'Your bank account requires re-authentication. Opening login screen...');
+                        // Automatically open Plaid Link in update mode
+                        await openPlaidLinkUpdateMode(accessToken);
+                        return;
+                    }
+                    
+                    throw new Error(errorData.message || 'Failed to fetch transactions');
+                }
+
+                const data = await response.json();
+                const transactions = data.transactions || [];
+
+                displayTransactions(transactions);
+                showStatus('success', `Found ${transactions.length} transactions`);
+            } catch (error) {
+                showStatus('error', `Error fetching transactions: ${error.message}`);
+            }
+        }
+
+        async function testReauthentication() {
+            if (!accessToken) {
+                showStatus('error', 'Please connect a bank account first to get an access token');
+                return;
+            }
+            
+            showStatus('info', 'Testing re-authentication flow with update mode...');
+            await openPlaidLinkUpdateMode(accessToken);
+        }
+
+        async function openPlaidLinkUpdateMode(currentAccessToken) {
+            try {
+                showStatus('loading', 'Requesting update link token...');
+                
+                // Get link_token for update mode
+                const linkTokenResponse = await fetch('/api/link-token-update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ access_token: currentAccessToken })
+                });
+
+                if (!linkTokenResponse.ok) {
+                    const errorData = await linkTokenResponse.json();
+                    throw new Error(errorData.detail || 'Failed to get update link token');
+                }
+
+                const linkTokenData = await linkTokenResponse.json();
+                const linkToken = linkTokenData.link_token;
+
+                showStatus('info', 'Opening Plaid Link in update mode (will show credential screen directly)...');
+
+                // Destroy existing handler if any
+                if (linkHandler) {
+                    linkHandler.destroy();
+                }
+
+                // Create Plaid Link with update mode
+                // This will open directly to credential screen, not bank selection
+                linkHandler = Plaid.create({
+                    token: linkToken,
+                    onSuccess: async (publicToken, metadata) => {
+                        showStatus('success', `Successfully re-authenticated ${metadata.institution.name}!`);
+
+                        // Exchange new public_token for updated access_token
+                        try {
+                            showStatus('loading', 'Updating access token...');
+                            const exchangeResponse = await fetch('/api/exchange-token', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({ public_token: publicToken })
+                            });
+
+                            if (!exchangeResponse.ok) {
+                                throw new Error('Failed to exchange token');
+                            }
+
+                            const exchangeData = await exchangeResponse.json();
+                            accessToken = exchangeData.access_token; // Update access token
+
+                            // Enable test re-auth button (in case it was disabled)
+                            document.getElementById('testReauthButton').disabled = false;
+
+                            showStatus('success', 'Access token updated successfully!');
+                            
+                            // Retry fetching transactions with new access token
+                            await fetchTransactions();
+                        } catch (error) {
+                            showStatus('error', `Error: ${error.message}`);
+                        }
+                    },
+                    onExit: (err, metadata) => {
+                        if (err != null) {
+                            showStatus('error', `Error: ${err.error_message || 'Re-authentication cancelled'}`);
+                        } else {
+                            showStatus('info', 'Re-authentication cancelled');
+                        }
+                    },
+                    onEvent: (eventName, metadata) => {
+                        console.log('Plaid update event:', eventName, metadata);
+                    }
+                });
+
+                // Open Plaid Link in update mode
+                linkHandler.open();
+            } catch (error) {
+                showStatus('error', `Error opening re-authentication: ${error.message}`);
+            }
+        }
+
+        function displayTransactions(transactions) {
+            const container = document.getElementById('transactionsContainer');
+            const list = document.getElementById('transactionsList');
+            
+            container.classList.remove('hidden');
+            list.innerHTML = '';
+
+            if (transactions.length === 0) {
+                list.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No transactions found</p>';
+                return;
+            }
+
+            transactions.forEach(txn => {
+                const item = document.createElement('div');
+                item.className = 'transaction-item';
+                
+                const left = document.createElement('div');
+                left.innerHTML = `
+                    <div class="transaction-name">${txn.name || 'Unknown'}</div>
+                    <div class="transaction-date">${txn.date || ''}</div>
+                `;
+                
+                const right = document.createElement('div');
+                right.className = 'transaction-amount';
+                right.textContent = `$${txn.amount?.toFixed(2) || '0.00'}`;
+                
+                item.appendChild(left);
+                item.appendChild(right);
+                list.appendChild(item);
+            });
+        }
+
+        function showStatus(type, message) {
+            const container = document.getElementById('statusContainer');
+            const statusDiv = document.createElement('div');
+            statusDiv.className = `status ${type}`;
+            
+            if (type === 'loading') {
+                statusDiv.innerHTML = `<span class="loading-spinner"></span>${message}`;
+            } else {
+                statusDiv.textContent = message;
+            }
+            
+            container.innerHTML = '';
+            container.appendChild(statusDiv);
+        }
+    </script>
+</body>
+</html>
+
